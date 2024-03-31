@@ -1,0 +1,760 @@
+---
+title: "NPEPPS-VRAC PPI SL Visualizations"
+output: html_document
+date: "2023-07-12"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+#load packages
+# if (!require("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+# 
+# BiocManager::install("ComplexHeatmap")
+
+library(ggplot2)
+library(plotly)
+library(paletteer)
+library(ggthemes)
+library(circlize)
+library(ComplexHeatmap)
+
+library("scales")
+library("ggsci")
+show_col(pal_npg("nrc")(10))
+```
+
+``` {r}
+#colors :)
+
+c('#4642a2', '#d1c0fe', '#ffefff', '#fbbeac', '#f78467', "#E64B35FF") #SL Log FC
+
+c("#EEEEEE", "#fbbeac", "#ff8062", "#E64B35FF") #PPI strength
+
+c('#790000', '#c12f21', '#ec6b51', '#fdae96', '#f5f5f5', '#f7c0fd', '#cc86d7', '#8c499a', '#4f0e5e') #TCGA CPH
+
+col_pvalcis <- colorRamp2(c(0,1), c("#E64B35FF", '#ffecff'), reverse = TRUE) #cisplatin tx risk scores
+
+col_pvalur <- colorRamp2(c(0,1), c("#8e1500", "#FFecFF"), reverse = TRUE) #unrec tx risk scores
+
+col = c("#a2e67c", "#399283", "#33547a", "#422fae", "#68affc", "#36edd3", "#da73f8") #class annotations
+
+#random - unused but I like em
+c("#21918c", "white", "#440154") 
+c("#583d78", '#a082c3', '#af90d2', '#bf9fe2', '#ceaef2', '#debdfd', '#eeccff', '#fedcff', '#ffecff'), reverse = TRUE) 
+'#4642a2', '#9385ef', '#a393fc', '#b2a2ff', '#c2b1ff', '#d3c0ff', '#e3cfff', '#f3dfff', '#ffefff'
+```
+
+
+``` {r}
+#import data from desktop (PPI rec'd from Saswat via email)
+path2file_ppinorm <- "/Users/feldmali/Desktop/Data/PPIandSL/PPInorm.csv"
+ppi <- as.data.frame(readr::read_csv(file= path2file_ppinorm, col_names = T, trim_ws = T))
+
+#changed from GEXP p-vals to CNA p-vals on 10-7-2023
+path2file_ppiKM <- "/Users/feldmali/Desktop/Data/KM_CNA_Pval_PlatinumAnnotations.csv"
+ppiKMpval <- as.data.frame(readr::read_csv(file= path2file_ppiKM, col_names = T, trim_ws = T))
+
+#import Cox Proportional Hazard Ratios from coxph of TCGA data [UPDATE 10-12-2023: trying CNA CPH instead of GEXP CPH]
+#path2file_ppiKMCPH <- "/Users/feldmali/Desktop/Data/PPIandSL/PPI_Proteomics_KMCPH_log.csv"
+#ppiKMCPH <- as.data.frame(readr::read_csv(file= path2file_ppiKMCPH, col_names = T, trim_ws = T))
+
+path2file_ppiKM.CNA.CPH <- "/Users/feldmali/Desktop/Log_CNA_CPHratios_filtered.csv"
+ppiKM.CNA.CPH <- as.data.frame(readr::read_csv(file= path2file_ppiKM.CNA.CPH, col_names = T, trim_ws = T))
+
+#format PPI data
+row.names(ppi) <- ppi[,1]
+ppi <- as.matrix(ppi)
+
+#format KM P-val data
+row.names(ppiKMpval) <- ppiKMpval[,1]
+ppiKMpval <- as.matrix(ppiKMpval)
+
+#format CPH data
+#row.names(ppiKMCPH) <- ppiKMCPH[,1]
+#ppiKMCPH <- as.matrix(ppiKMCPH)
+
+ppiKM.CNA.CPH <- ppiKM.CNA.CPH[-c(33:40),]
+row.names(ppiKM.CNA.CPH) <- ppiKM.CNA.CPH[,1]
+ppiKM.CNA.CPH <- as.matrix(ppiKM.CNA.CPH)
+
+### add SL logFC (or rank?) to PPI data for visualization
+path2file_SLdat <- "/Users/feldmali/Desktop/Data/PPIandSL/SLData.csv"
+SLdat <- as.data.frame(readr::read_csv(file= path2file_SLdat, col_names = T, trim_ws = T))
+
+#format SL screen data
+row.names(SLdat) <- SLdat$Gene
+SLdat$Rank <- c(1:18718)
+
+#create short list of logFC data for only ppi interactors
+SLlogfc <- SLdat[,c(1,2,5)]
+SL_ppi <- intersect(row.names(ppi),row.names(SLlogfc))
+SLlogfc <- SLlogfc[SL_ppi,]
+dim(SLlogfc)
+
+SL_qval <- SLdat[,c(1,2,4)]
+SL_qvalnames <- intersect(row.names(ppi),row.names(SLlogfc))
+SL_qval <- SL_qval[SL_qvalnames,]
+
+#create concatenated df with ppi and SL information
+SLppi <- as.data.frame(ppi[,c(1,5,9)])
+SLppi$SLscreenLogFC <- SLlogfc[,2]
+SLppi$Rank <- SLlogfc[,3]
+SLppi$AdjPVal <- SL_qval[,3]
+SLppi <- as.matrix(SLppi)
+```
+
+``` {r}
+#create subsets for heatmap objects to plot together
+#make sure rows are aligned (this is why we made the merged df above)
+#keep things in matrix form, numeric where possible (will break if have mixed num/char)
+
+# for PPI heatmap
+mat1 <- as.data.frame(SLppi[,c(2:3)])
+mat1$KU1919_FlagPPInorm <- as.numeric(mat1[,1])
+mat1$T24_FlagPPInorm <- as.numeric(mat1[,2])
+mat1[,1] <- as.numeric(mat1[,1])
+mat1[,2] <- as.numeric(mat1[,2])
+
+#add annotations for dendrogram labels based on DAVID analysis
+mat1ann <- mat1
+mat1ann$split <- c("")
+mat1ann[c(1:5),3] <- c("VRAC Subunits")
+mat1ann[c(6:7),3] <- c("Ion Transport")
+mat1ann[c(8:11),3] <- c("Amino Acid Transport")
+mat1ann[c(12:15),3] <- c("Ribosome")
+mat1ann[c(16:20),3] <- c("RNA Processing")
+mat1ann[c(21:24),3] <- c("RNA Polymerase")
+mat1ann[c(25:32),3] <- c("Unclassified")
+mat1ann <- as.matrix(mat1ann)
+
+#for SL_LogFC heatmap
+mat2 <- as.data.frame(SLppi[,4])
+mat2$SL_LogFC <- mat2$`SLppi[, 4]`
+mat2$SL_LogFC <- as.numeric(mat2[,2])
+
+#for SL_Rank heatmap
+mat3 <- as.data.frame(SLppi[,5])
+mat3$SL_Rank <- mat3$`SLppi[, 5]`
+mat3$SL_Rank <- as.numeric(mat3[,2])
+
+#for SL_qval heatmap
+mat4 <- as.data.frame(SLppi[,6])
+mat4$SL_AdjPVal <- mat4$`SLppi[, 6]`
+mat4$SL_AdjPVal <- as.numeric(mat4[,2])
+is_sig <- mat4$SL_AdjPVal<0.01
+mat4$sig <- is_sig
+
+#for KM P-vals (TCGA gene expression stratified by cisplatin annotation) switched to CNA on 10-7-23
+mat5 <- as.data.frame(ppiKMpval[,c(3,4)])
+mat5 <- mat5[-1,]
+mat5[,1] <- as.numeric(mat5$Cisplatin_CNA_Pvals)
+mat5[,2] <- as.numeric(mat5$Unrecorded_CNA_Pvals)
+mat5[,3] <- p.adjust(mat5[,1], method = "fdr")
+mat5[,4] <- p.adjust(mat5[,2], method = "fdr")
+
+#for KM Cox prop hazard ratios [UPDATED 10-23-23: using CNA CPH NOT GEXP CPH]
+# mat6 <- as.data.frame(ppiKMCPH[,c(14:15)])
+# mat6[,1] <- as.numeric(mat6$CoxHazardRatio.Cis)
+# mat6[,2] <- as.numeric(mat6$CoxHazardRatio.Unrec)
+# mat6 <- as.matrix(mat6)
+
+mat7 <- as.data.frame(ppiKM.CNA.CPH[,c(6:7)])
+mat7[,1] <- as.numeric(mat7$Log2CPH.CNA.Cis)
+mat7[,2] <- as.numeric(mat7$Log2CPH.CNA.Unrec)
+mat7 <- as.matrix(mat7)
+
+#row.names(mat5) <- c("LRRC8A", "LRRC8C", "LRRC8E", "LRRC8D", "LRRC8B", "ATP5MG", "VDAC2", "SFXN3", "SLC1A5", "SLC25A13", "SLC25A24", "MRPL17", "MRPS33", "RPL27A", "RPLP1", "EXOSC10", "SMN1", "DDX47", "HELZ2", "AKAP8L", "JUNB", "FOXA2", "NKRF", "CNBP", "XIAP", "CCT6A", "SEC31A", "TNRC6C", "SH3BP4", "YARS2", "TRNAU1AP", "CNOT2")
+```
+
+
+``` {r}
+#create heatmap objects, annotations and legends for plotting
+#best to define the annotations first then can draw them on the main heatmap
+#looks like easier to create one big annotation per side rather than make separate annotations and draw them together
+
+######## Annotations #########
+
+### Right Annotation: LogFC+P-Values (SL Screen); RiskScore+P-Values (TCGA KMs); Classifications (DAVID)
+
+#define color palettes
+
+#UPDATE new colors 10-23-23
+col_SL_logfc <-  circlize::colorRamp2(seq(min(mat2$SL_LogFC), max(mat2$SL_LogFC), length = ), c( "#ffb14e", "#ffffff", "#9d02d7"))
+
+
+col_CPHcis <-colorRamp2(c(-2, -.5, 0, .5, 1.5, 2), c('#4642a2', '#d1c0fe', '#ffefff', '#fbbeac', '#f78467', "#E64B35FF"))
+
+col_CPHur <- colorRamp2(c(-2, -.5, 0, .5, 1.5, 2), c('#4642a2', '#d1c0fe', '#ffefff', '#fbbeac', '#f78467', "#E64B35FF"))
+
+
+col_happi <- list(Type = c("VRAC Subunits", "Ion Transport", "Amino Acid Transport", "Ribosome", "RNA Processing", "RNA Polymerase", "Unclassified"), 
+                  col = c("#a2e67c", "#399283", "#33547a", "#422fae", "#68affc", "#36edd3", "#da73f8"))
+
+colhappi = list(Class = c("VRAC Subunits" = "#a2e67c",
+                                          "Ion Transport" = "#399283",
+                                          "Amino Acid Transport" = "#33547a",
+                                          "Ribosome" = "#422fae",
+                                          "RNA Processing" = "#68affc",
+                                          "RNA Polymerase" = "#36edd3",
+                                          "Unclassified" = "#da73f8"))
+
+#define p-val stars
+pvalueSL = mat4$SL_AdjPVal
+is_sigSL = pvalue<0.001
+pch = rep("*",32)
+pch[!is_sigSL] = NA
+
+#UPDATE 10-23-23 using pADJ instead of pvals for CPH
+pvalueCisKM = mat5[,3]
+is_sigCisKM = pvalueCisKM<0.333
+pchCisKM = rep("*",32)
+pchCisKM[!is_sigCisKM] = NA
+
+pvalueUR = mat5[,4]
+is_sigUR = pvalueUR<0.333
+pchUR = rep("*", 32)
+pchUR[!is_sigUR] = NA
+
+haright = rowAnnotation(pvalueSL = anno_simple(mat2$SL_LogFC,
+                                                   col = col_SL_logfc,
+                                                   pch = pch1,
+                                                   pt_gp = gpar(fontsize = 10, 
+                                                                fontface = "bold", 
+                                                                col = "white")),
+                            pvalueCisKM = anno_simple(mat7[,1],
+                                                      col = col_CPHcis, 
+                                                      pch = pchCisKM,
+                                                      pt_gp = gpar(fontsize = 10, 
+                                                                   fontface = "bold", 
+                                                                   col = "white")),
+                            pvalueUR = anno_simple(mat7[,2],
+                                                   col = col_CPHur, 
+                                                   pch = pchUR,
+                                                   pt_gp = gpar(fontsize = 10, 
+                                                                fontface = "bold", 
+                                                                col = "white")),
+                            annotation_label = c(" Synthetic Lethality",
+                                                 " HR: Cisplatin Tx", 
+                                                 " HR: Unrecorded Tx"),
+                            gap = unit(1.5, "mm"),
+                            annotation_name_side = "top",
+                            annotation_name_rot = 45,
+                            annotation_name_gp = gpar(fontsize = 10, fontface = "bold"))
+
+# 
+# happi = HeatmapAnnotation(Class = mat1ann[,3],
+#                         col = list(Class = c("VRAC Subunits" = "#a2e67c",
+#                                           "Ion Transport" = "#399283",
+#                                           "Amino Acid Transport" = "#33547a",
+#                                           "Ribosome" = "#422fae",
+#                                           "RNA Processing" = "#68affc",
+#                                           "RNA Polymerase" = "#36edd3",
+#                                           "Unclassified" = "#da73f8")),
+#                       annotation_label = c(" Classification"),
+#                       which = "row",
+#                       annotation_name_side = "top",
+#                       annotation_name_rot = 45,
+#                       annotation_name_gp = gpar(fontsize = 10, fontface = "bold"),
+#                       show_legend = FALSE)
+
+
+### VRAC Annotation
+hav = HeatmapAnnotation(ann = mat1ann[,3],
+                        col = list(ann = c("VRAC Subunits" = "grey5",
+                                          "Ion Transport" = "white",
+                                          "Amino Acid Transport" = "white",
+                                          "Ribosome" = "white",
+                                          "RNA Processing" = "white",
+                                          "RNA Polymerase" = "white",
+                                          "Unclassified" = "white")),
+                      show_annotation_name = FALSE,
+                      which = "row",
+                      show_legend = FALSE,
+                      simple_anno_size = unit(0.05, "cm"))
+
+
+# cell line annotation
+col_hacl <- list(class = c("KU1919", "T24"), col = c("grey10","grey10"))
+
+hacl <- HeatmapAnnotation(CellLine = anno_block(gp = gpar(lwd = 0.75),
+                                                labels = c("NPEPPS Interactome: Cell Line"),
+                                                labels_gp = gpar(col = "black", fontsize = 8)))
+
+
+##### List of Annotations to draw together #####
+#note: order of list is order they'll be drawn. make one annotation list per side of the heatmap.
+
+rightha = haSLqval + haKMpval + happi
+topha = hacl
+
+####### MAIN HEATMAP #######
+
+######## PPI #########
+#create split by class
+split <- factor(x = mat1ann[,3],
+              levels = c("VRAC Subunits", "Ion Transport", "Amino Acid Transport", "Ribosome", "RNA Processing", "RNA Polymerase", "Unclassified"))
+
+levels(split) <- c("VRAC Subunits", "Ion Transport", "Amino Acid Transport", "Ribosome", "RNA Processing", "RNA Polymerase", "Unclassified")
+
+colsplit <- factor
+
+#define color palette for ppi heatmap object
+col_ppi =  colorRamp2(seq(min(mat1[,2]), max(mat1[,2]), length = 3), c("#fbfff7", "#4f7264", '#2a4c3f'))
+
+#c("#EEEEEE", '#00a087', '#006f58', '#00402e')
+#"EEEEEE", "#fbbeac", "#ff8062", "#E64B35FF"                                                                                     
+ht_ppi <- ComplexHeatmap::Heatmap(mat1[,c(1:2)],
+                                      show_row_dend = FALSE,
+                                      show_column_dend = FALSE,
+                                      cluster_rows = FALSE,
+                                      cluster_columns = FALSE,
+                                      row_names_side = c("left"),
+                                      row_names_gp = gpar(fontsize = 10),
+                                      row_split = split,
+                                      row_title_gp = gpar(fontsize = 8, fontface = "bold"),
+                                      row_title_side = "right",
+                                      row_title_rot = 90,
+                                      row_title = c("VRAC\nSubunits", "Ion\nTransport", "Amino Acid\nTransport", "Ribosome", "RNA\nProcessing", "RNA\nPolymerase", "Unclassified"),
+                                      cluster_row_slices = FALSE,
+                                      cluster_column_slices = FALSE,
+                                      border = TRUE,
+                                      border_gp = gpar(lwd = 0.75, col = "grey70"),
+                                      row_gap = unit(3.5, "mm"),
+                                      #col_gap = unit(0,"mm"),
+                                      #column_title = c("Relative enrichment by IP-MS-MS"),
+                                      column_title_side = c("top"),
+                                      column_names_side = c("top"),
+                                      column_names_rot = 0,
+                                      #column_title_gp = gpar(fontsize = 13),
+                                      column_labels = c("KU1919","T24"),
+                                      column_names_gp = gpar(fontsize = 10, fontface = "bold"),
+                                      column_names_centered = TRUE,
+                                      col = col_ppi,
+                                      name = c("Relative Protein Abundance"),
+                  left_annotation = hav,
+                  show_heatmap_legend = FALSE)
+
+
+######## Legends #########
+lgd_ppi <- Legend(title = c("PPI: Relative Interaction Strength"),
+                  title_position = "topcenter",
+                  at = c(0, 0.5, 1),
+                  col_fun = col_ppi,
+                  labels = c("0", "0.5", "1"),
+                  direction = "horizontal",
+                  legend_width = unit(6, "cm"))
+
+lgd_SLlogfc <- Legend(title = c("SL gRNA logFC"),
+                    title_position = "topleft",
+                    at = c(0.6, 0.2, 0, -0.2, -0.6),
+                    col_fun = col_SL_logfc,
+                    labels = c("0.6 synthetic resistant", "0.2", "0", "-0.2", "-0.6 synthetic lethal"),
+                    name = c("SL gRNA LogFC"),
+                    legend_height = unit(2.5,"cm"))
+
+lgd_CisKMpval <- Legend(title = c("Survival Risk (Log Hazard Ratio)"),
+                    title_position = "topleft",
+                    at = c(-2, 0, 2),
+                    col_fun = col_CPHcis,
+                    labels = c("-2", "0", "2"),
+                    name = c("Risk: Cisplatin Tx (TCGA)"),
+                    legend_height = unit(2.5,"cm"))
+
+# lgd_URKMpval <- Legend(title = c("Hazard Ratio: Unrecorded Tx (TCGA)"),
+#                     title_position = "topleft",
+#                     at = c(0, 0.5, 1),
+#                     col_fun = col_pvalur,
+#                     labels = c("0", "0.5", "1"),
+#                     name = c("Risk: Unrecorded Tx (TCGA)"),
+#                     legend_height = unit(2.5,"cm"))
+
+lgd_CPH <- Legend(title = c("Hazard Ratio (Low Expression)"),
+                    title_position = "topleft",
+                    at = c(0, 0.5, 1, 2, 3),
+                    col_fun = col_CPHcis,
+                    labels = c("0", "0.5", "1", "2", "3"),
+                    name = c("Hazard Ratio: Cisplatin Tx (TCGA)"),
+                    legend_height = unit(2.5,"cm"))
+
+
+lgd_sigKM = Legend(pch = "*", type = "points", labels = "FDR < 0.333")
+lgd_sigSL = Legend(pch = "*", type = "points", labels = "P-Val < 0.001")
+
+lgd_happi = Legend(title = c("Classification (DAVID)"),
+                                                     title_position = "topleft",
+                                                     labels = c("VRAC Subunits", "Ion Transport", "Amino Acid Transport", "Ribosome", "RNA Processing", "RNA Polymerase", "Unclassified"),
+                                                     legend_gp = gpar(fill = col_happi$col)
+                                                     )
+### Package legends together to draw them with alignment
+pdsig <- packLegend(lgd_ppi, lgd_SLlogfc, lgd_sigSL, lgd_CisKMpval, lgd_sigKM,
+                    gap = unit(5, "mm"), 
+                    column_gap = unit(1, "cm"), 
+                    max_height = unit(15, "cm"),
+                    max_width = unit(10, "cm"))
+
+######## Heatmap Lists #########
+ht_list = ht_ppi + haright
+ComplexHeatmap::draw(ht_list, padding = unit(c(1,1,1,3),"cm"))
+draw(pdsig)
+
+cht <- ComplexHeatmap::draw(ht_list,
+                            heatmap_legend_side = "bottom", 
+                            annotation_legend_list = list(pdsig),
+                            annotation_legend_side = "right",
+                            #row_title_gp = grid::gpar(col = "white"),
+                            column_title = c("NPEPPS-FLAG Interactome"),
+                            column_title_gp = grid::gpar(fontsize = 12, fontface = "bold"),
+                            padding = unit(c(1,1,2,2),"cm")
+                            )
+```        
+
+
+
+## Visualizing SL screen in xy plot form
+
+``` {r}
+#import data from desktop (SL screen downloaded from BioRXIV NPEPPS Manuscript Supplemental Data)
+
+path2file_SLdat <- "/Users/feldmali/Desktop/Data/PPIandSL/SLData.csv"
+SLdat <- as.data.frame(readr::read_csv(file= path2file_SLdat, col_names = T, trim_ws = T))
+
+#format SL screen data
+SLdat$Rank <- c(1:18718)
+SLdat$Color <- c("null")
+
+SLdat[c(1,11,90,572,14490),6] <- c("VRAC")
+SLdat[18716,6] <- c("NPEPPS")
+#VRAC: rows 1,11,90,572,14490
+#NPEPPS: row 18716
+
+#        Gene       LogFC      p.value  adj p.value  Rank Color
+# 1     LRRC8A  0.55365684 2.810000e-22 8.630000e-20     1  VRAC
+# 11    LRRC8D  0.34840469 1.900000e-10 2.300000e-08    11  VRAC
+# 90    LRRC8B  0.19991275 7.380000e-12 1.030000e-09    90  VRAC
+# 572   LRRC8C  0.11302335 1.771692e-03 2.087415e-02   572  VRAC
+# 14490 LRRC8E -0.04018991 1.711066e-01 4.015109e-01 14490  VRAC
+# 18716 NPEPPS -1.93628281 7.630000e-48 4.680000e-45 18716 NPEPPS
+```
+
+``` {r}
+plot(SLdat$Rank, SLdat$LogFC,
+               main = "SL Screen Hits Annotated by Interaction with NPEPPS",
+               xlab = "Cisplatin Synthetic Lethality Rank",
+               ylab = "LogFC of gRNA with Cisplatin",
+               type = "p",
+               pch = 20,
+               col = "grey70",
+               #asp = 4750,
+               xaxs = c("i"),
+               usr = c(0,20000,-2,0.5),
+               xlim = c(-5000,20000),
+               ylim = c(-2.0, 0.6),
+               frame.plot = FALSE)
+
+text(1439, 0.07983166, "ATP5MG", cex = .8, adj = 3,4, offset = 0.5, col = 'grey30')
+points(1439, 0.07983166, pch = 19, col = 'grey30') #ATP5MG
+
+text(10307, -0.003927265, "VDAC2", cex = .8, adj = 3,4, offset = 0.5, col = 'grey30')
+points(10307, -0.003927265, pch = 19, col = 'grey30') #VDAC2
+
+text(14075, -0.03542452, "SFXN3", cex = .8, adj = 3,4, offset = 0.5, col = 'grey30')
+points(14075, -0.03542452, pch = 19, col = 'grey30') #SFXN3
+
+text(12, 0.341968467, "SLC1A5", cex = .8, adj = 3,4, offset = 0.5, col = 'grey30')
+points(12, 0.341968467, pch = 19, col = 'grey30') #"SLC1A5"
+
+text(5392, 0.03163836, "SLC25A13", cex = .8, adj = 3,4, offset = 0.5, col = 'grey30')
+points(5392, 0.03163836, pch = 19, col = 'grey30') #"SLC25A13"
+
+text(1572, 0.07684516, "SLC25A24", cex = .8, adj = 3,4, offset = 0.5, col = 'grey30')
+points(1572, 0.07684516, pch = 19, col = 'grey30') #"SLC25A24"
+
+
+text(3900, 0.04491251, "MRPL17", cex = .8, adj = 3,4, offset = 0.5, col = 'grey30')
+points(3900, 0.04491251, pch = 19, col = 'grey30') #"MRPL17"
+
+text(844, 0.0981776, "MRPS33", cex = .8, adj = 3,4, offset = 0.5, col = 'grey30')
+points(844, 0.0981776, pch = 19, col = 'grey30') #"MRPS33"
+
+text(18096, -0.1530079, "RPL27A", cex = .8, adj = 3,4, offset = 0.5, col = 'grey30')
+points(18096, -0.1530079, pch = 19, col = 'grey30') #"RPL27A"
+
+text(8655, 0.007628503, "RPLP1", cex = .8, adj = 3,4, offset = 0.5, col = 'grey30')
+points(8655, 0.007628503, pch = 19, col = 'grey30') # "RPLP1"
+
+text(4681, 0.0378411, "EXOSC10", cex = .8, adj = 3,4, offset = 0.5, col = 'grey30')
+points(4681, 0.0378411, pch = 19, col = 'grey30') #"EXOSC10"
+
+text(17228, -0.09256604, "SMN1", cex = .8, adj = 3,4, offset = 0.5, col = 'grey30')
+points(17228, -0.09256604, pch = 19, col = 'grey30') #"SMN1"
+
+text(18152, -0.1638871, "DDX47", cex = .8, adj = 3,4, offset = 0.5, col = 'grey30')
+points(18152, -0.1638871, pch = 19, col = 'grey30') #"DDX47"
+
+text(12986, -0.02490439, "HELZ2", cex = .8, adj = 3,4, offset = 0.5, col = 'grey30')
+points(12986, -0.02490439, pch = 19, col = 'grey30') #"HELZ2"
+
+
+text(330, 0.136877287, "AKAP8L", cex = .8, adj = 3,4, offset = 0.5, col = 'grey30')
+points(330, 0.136877287, pch = 19, col = 'grey30') #AKAP8L
+
+
+text(15996, -0.06079457, "JUNB", cex = .8, adj = 3,4, offset = 0.5, col = 'grey30')
+points(15996, -0.06079457, pch = 19, col = 'grey30') #"JUNB"
+
+text(9421, 0.002522461, "FOXA2", cex = .8, adj = 3,4, offset = 0.5, col = 'grey30')
+points(9421, 0.002522461, pch = 19, col = 'grey30') #"FOXA2"
+
+text(68, 0.2210477, "NKRF", cex = .8, adj = 3,4, offset = 0.5, col = 'grey30')
+points(68, 0.2210477, pch = 19, col = 'grey30') #"NKRF"
+
+text(11486, -0.01223363, "CNBP", cex = .8, adj = 3,4, offset = 0.5, col = 'grey30')
+points(11486, -0.01223363, pch = 19, col = 'grey30') #"CNBP"
+
+
+text(12896, -0.02410584, "XIAP", cex = .8, adj = 3,4, offset = 0.5, col = 'grey30')
+points(12896, -0.02410584, pch = 19, col = 'grey30') #"XIAP"
+
+text(3, 0.455013, "CCT6A", cex = .8, adj = 3,4, offset = 0.5, col = 'grey30')
+points(3, 0.455013, pch = 19, col = 'grey30') #"CCT6A"
+
+text(2330, 0.06373904, "SEC31A", cex = .8, adj = 3,4, offset = 0.5, col = 'grey30')
+points(2330, 0.06373904, pch = 19, col = 'grey30') #"SEC31A"
+
+text(8576, 0.008123118, "TNRC6C", cex = .8, adj = 3,4, offset = 0.5, col = 'grey30')
+points(8576, 0.008123118, pch = 19, col = 'grey30') #"TNRC6C"
+
+text(8761, 0.006900149, "SH3BP4", cex = .8, adj = 3,4, offset = 0.5, col = 'grey30')
+points(8761, 0.006900149, pch = 19, col = 'grey30') #"SH3BP4"
+
+text(104, 0.192724, "YARS2", cex = .8, adj = 3,4, offset = 0.5, col = 'grey30')
+points(104, 0.192724, pch = 19, col = 'grey30') #"YARS2"
+
+text(17251, -0.09327151, "TRNAU1AP", cex = .8, adj = 3,4, offset = 0.5, col = 'grey30')
+points(17251, -0.09327151, pch = 19, col = 'grey30') #"TRNAU1AP"
+
+text(18458, -0.2485568, "CNOT2", cex = .8, adj = 3,4, offset = 0.5, col = 'grey30')
+points(18458, -0.2485568, pch = 19, col = 'grey30') #"CNOT2"
+
+text(1, 0.5536568, "LRRC8A", cex = 1.2, adj = 3,4, offset = 0.5, col = "grey10")
+text(11, 0.34840469, "LRRC8D", cex = 1.2, adj = 3,4, offset = 0.5, col = "grey10")
+text(90, 0.19991275, "LRRC8B", cex = 1.2, pos = 2, offset = 0.4, col = "grey10")
+text(572, 0.11302335, "LRRC8C", cex = 1.2, pos = 1, offset = 0.75, col = "grey10")
+text(14490, -0.04018991, "LRRC8E", cex = 1.2, pos = 3, offset = 0.5, col = 'grey10')
+text(18716, -1.93628281, "NPEPPS", cex = 1.2, pos = 2, offset = 0.5, col = 'grey10')
+text(12, 0.341968467,"SLC1A5", cex = 1, adj = 3,4, offset = 5.5, col = "grey20")
+text(68, 0.2210477, "NKRF", cex = 1, adj = 3,4, offset = 5.5, col = "grey20")
+
+points(1, 0.5536568, pch = 19, col = "#E64B35FF")
+points(11, 0.34840469, pch = 19, col = "#E64B35FF")
+points(90, 0.19991275, pch = 19, col = "#ff8062")
+points(572, 0.11302335, pch = 19, col = "#ff8062")
+points(14490, -0.04018991, pch = 19, col = '#fbbeac')
+points(18716, -1.93628281, pch = 19, col = "#4642a2")
+```
+
+
+#SPARE PARTS AND PRACTICE CODE
+
+``` {r}
+#spare parts
+
+col_qval <- colorRamp2(seq(min(mat4$SL_AdjPVal), max(mat4$SL_AdjPVal), length = 9), c("#583d78", '#a082c3', '#af90d2', '#bf9fe2', '#ceaef2', '#debdfd', '#eeccff', '#fedcff', '#ffecff'), reverse = TRUE)
+
+
+######## SL Log FC #########
+
+#define color palette for logFC heatmap object
+col_SL_logfc <-  circlize::colorRamp2(seq(min(mat2$SL_LogFC), max(mat2$SL_LogFC), length = 6), c('#4642a2', '#d1c0fe', '#ffefff', '#fbbeac', '#f78467', "#E64B35FF"))
+
+ht_SL_logfc <- ComplexHeatmap::Heatmap(mat2$SL_LogFC,
+                                       show_row_dend = FALSE,
+                                       show_column_dend = FALSE,
+                                       cluster_rows = FALSE,
+                                       cluster_columns = FALSE,
+                                       #column_title = c("Relative enrichment from NPEPPS-FLAG IP"),
+                                       column_title_side = c("top"),
+                                       column_names_side = c("top"),
+                                       column_names_rot = 45,
+                                       #column_title_gp = gpar(fontsize = 13),
+                                       column_labels = c("Synthetic Lethal"),
+                                       column_names_gp = gpar(fontsize = 10, fontface = "bold"),
+                                       column_names_centered = FALSE,
+                                       col = col_SL_logfc,
+                                       name = c("gRNA LogFC"),
+                                       heatmap_legend_param = list(title = c("Cisplatin SL gRNA logFC"),
+                                                                  title_position = "topleft",
+                                                                  at = c(0.6, 0.2, 0, -0.2, -0.6),
+                                                                  col_fun = col_SLrank,
+                                                                  labels = c("0.6\nsynthetic resistant", "0.2", "0", "-0.2", "-0.6\nsynthetic lethal"),
+                                                                  name = c("Synthetic lethal rank"),
+                                                                  direction = "horizontal",
+                                                                  legend_width = unit(6,"cm")),
+                                       width = unit(0.5, "cm"), height = unit(8, "cm"),
+                                       show_heatmap_legend = FALSE,
+                                       left_annotation = happi)
+
+# lgd_qval <- Legend(title = c("SL Adj. P-Val"),
+ #                 title_position = "topleft",
+ #                 at = c(9.574255e-01, 8.630000e-20),
+ #                 col_fun = col_qval,
+ #                 labels = c("1", "1e-20"),
+ #                name = c("Synthetic lethal p-value"),
+ #                legend_width = unit(4,"cm"))
+
+######## SL Rank #########
+#define color palette for this heatmap object
+col_SLrank <-  circlize::colorRamp2(seq(max(mat3$SL_Rank), (min(mat3$SL_Rank)), length = 3), c("#21918c", "white", "#440154"))
+
+'#458376', '#6cac9e', '#97d6c7', '#f5f5f5', '#febaa0', '#da8c71', '#b16249'
+
+ht_SL_rank <- ComplexHeatmap::Heatmap(mat3$SL_Rank,
+                                      # show_row_dend = FALSE,
+                                       show_column_dend = FALSE,
+                                      row_title = "",
+                                      # cluster_rows = FALSE,
+                                      # cluster_columns = FALSE,
+                                      # row_title_side = c("left"),
+                                      # row_names_side = c("left"),
+                                      # column_title_side = c("top"),
+                                       column_names_side = c("top"),
+                                       column_names_rot = 0,
+                                      #column_title_gp = gpar(fontsize = 13),
+                                      column_labels = c("Synthetic Lethal Rank"),
+                                      column_names_gp = gpar(fontsize = 10, fontface = "bold"),
+                                      column_names_centered = TRUE,
+                                      col = col_SLrank,
+                                      border = TRUE,
+                                      border_gp = gpar(lwd = 1, col = "grey70"),
+                                      heatmap_legend_param = list(title = c("Cisplatin SL rank"),
+                                                                  title_position = "topleft",
+                                                                  at = c(18458, 9229, 1),
+                                                                  col_fun = col_SLrank,
+                                                                  labels = c("18458\nsynthetic lethal", "9229", "1\nsynthetic resistant"),
+                                                                  name = c("Synthetic lethal rank"),
+                                                                  direction = "horizontal",
+                                                                  legend_width = unit(6,"cm")),
+                                      right_annotation = happi
+                                      )
+
+ha = HeatmapAnnotation(
+    pvalue = anno_simple(-log10(pvalue), col = pvalue_col_fun, pch = pch),
+    annotation_name_side = "left")
+
+lgd_SL <- Legend(title = c("Cisplatin SL rank"),
+                 title_position = "topcenter",
+                 at = c(18458, 9229, 1),
+                 col_fun = col_SLrank,
+                 labels = c("18458\nsynthetic lethal", "9229", "1\nsynthetic resistant"),
+                name = c("Synthetic lethal rank"),
+                direction = "horizontal",
+                legend_width = unit(4,"cm"))
+
+
+happi <- HeatmapAnnotation(pd)
+
+
+library(grid)
+my_circle <- circleGrob(x = 0.5, y = 0.5, r = 5,
+                        gp = gpar(col = "gray", lty = 3))
+
+cm = ColorMapping(col_fun = col_fun)
+map_to_colors(cm, runif(10))
+
+path2save <- "/Users/feldmali/Desktop/"
+pdf(file = paste0(path2save, ppi_complex, ".pdf"), width = 16, height = 12)
+# ppitrim <- ppi[-c(1:2),]
+# ppitrim <- ppitrim[,-5]
+
+path2file_proteomics <- "/Users/feldmali/Desktop/Data/PPIandSL/Proteomics_VSN_batch_corrected.txt"
+protdat <- as.data.frame(readr::read_table(file = path2file_proteomics))
+ppiadj <- as.data.frame(ppi)
+```
+
+``` {r}
+#extra colors again :)
+
+c('#4642a2', '#d1c0fe', '#ffefff', '#fbbeac', '#f78467', "#E64B35FF") #SL Log FC
+
+c("#EEEEEE", "#fbbeac", "#ff8062", "#E64B35FF") #PPI strength
+
+c('#790000', '#c12f21', '#ec6b51', '#fdae96', '#f5f5f5', '#f7c0fd', '#cc86d7', '#8c499a', '#4f0e5e') #TCGA CPH
+
+col_pvalcis <- colorRamp2(c(0,1), c("#E64B35FF", '#ffecff'), reverse = TRUE) #cisplatin tx risk scores
+
+col_pvalur <- colorRamp2(c(0,1), c("#8e1500", "#FFecFF"), reverse = TRUE) #unrec tx risk scores
+
+col = c("#a2e67c", "#399283", "#33547a", "#422fae", "#68affc", "#36edd3", "#da73f8") #class annotations
+
+#random - unused but I like em
+c("#21918c", "white", "#440154") 
+c("#583d78", '#a082c3', '#af90d2', '#bf9fe2', '#ceaef2', '#debdfd', '#eeccff', '#fedcff', '#ffecff'), reverse = TRUE) 
+'#4642a2', '#9385ef', '#a393fc', '#b2a2ff', '#c2b1ff', '#d3c0ff', '#e3cfff', '#f3dfff', '#ffefff'
+redpal <- paletteer_d(`"ggsci::red_material"`, type = c("continuous"), direction = -1)
+bluepal <- paletteer_d(`"ggsci::indigo_material"`, type = c("continuous"))
+
+
+pal <- c("aquamarine", "grey", "orange")
+pal <- setNames(pal, c("VRAC","null", "NPEPPS"))
+
+SLplotly <- plot_ly(data = SLdat, x = ~Rank, y = ~LogFC,
+                    type = 'scatter',
+                    mode = 'markers+labels',
+                    colors = pal,
+                    color = ~Color
+                    )
+add_markers(SLplotly, color = ~Color)
+
+```
+
+## LRRC8A Interactions - DO NOT USE - DATA QUALITY INSUFFICIENT
+``` {r}
+#import data from desktop (PPI rec'd from Saswat via email)
+path2file_lappi <- "/Users/feldmali/Desktop/Data/PPIandSL/LRRC8A_FlagCoIP.csv"
+lappi <- as.data.frame(readr::read_csv(file= path2file_lappi, col_names = T, trim_ws = T))
+
+#format PPI data
+lappi <- lappi[,-c(6:8)]
+ladup <- lappi[,1]
+lappi <- unique(lappi, by = seq_along(lappi[,1]))
+lappi <- lappi[c(1:100),]
+
+row.names(lappi) <- lappi[,1]
+lappi <- as.matrix(lappi)
+
+### add SL logFC (or rank?) to PPI data for visualization
+path2file_SLdat <- "/Users/feldmali/Desktop/Data/PPIandSL/SLData.csv"
+SLdat <- as.data.frame(readr::read_csv(file= path2file_SLdat, col_names = T, trim_ws = T))
+
+#format SL screen data
+row.names(SLdat) <- SLdat$Gene
+SLdat$Rank <- c(1:18718)
+
+#create short list of logFC data for only ppi interactors
+SLlogfc <- SLdat[,c(1,2,5)]
+SL_ppi <- intersect(row.names(ppi),row.names(SLlogfc))
+SLlogfc <- SLlogfc[SL_ppi,]
+dim(SLlogfc)
+
+SL_qval <- SLdat[,c(1,2,4)]
+SL_qvalnames <- intersect(row.names(ppi),row.names(SLlogfc))
+SL_qval <- SL_qval[SL_qvalnames,]
+
+#create concatenated df with ppi and SL information
+SLppi <- as.data.frame(ppi[,c(1,5,9)])
+SLppi$SLscreenLogFC <- SLlogfc[,2]
+SLppi$Rank <- SLlogfc[,3]
+SLppi$AdjPVal <- SL_qval[,3]
+SLppi <- as.matrix(SLppi)
+
+#create datasets for heatmap objects to plot together
+#make sure rows are aligned (this is why we made the merged df above)
+
+# for PPI heatmap
+mat1 <- as.data.frame(SLppi[,c(2:3)])
+mat1$KU1919_FlagPPInorm <- as.numeric(mat1[,1])
+```
